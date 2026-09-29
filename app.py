@@ -1,154 +1,752 @@
-#!/usr/bin/env python
-# coding: utf-8
+from pathlib import Path
 
-# In[ ]:
-
-
-import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit as st
 
-# 페이지 설정
-st.set_page_config(page_title="MLCC 수명 평가 대시보드", layout="wide")
 
-# ---------------------------------------------------------
-# 0. 데이터 로드 함수 (요구사항 4: 자동 반영 및 캐싱)
-# ---------------------------------------------------------
-@st.cache_data(ttl=5)  # 5초마다 엑셀 변경사항 자동 감지/갱신
-def load_data(file_path):
-    # 엑셀 파일의 Header 위치 처리 (Row 5: 그룹 헤더, Row 6: 상세 컬럼)
-    raw_df = pd.read_excel(file_path, sheet_name='수명', header=None)
-    
-    # 실제 컬럼명 추출 (Row 5의 데이터)
-    columns = raw_df.iloc[5].values
-    df = raw_df.iloc[6:].copy()
-    df.columns = columns
-    
-    # 데이터 타입 정제
-    df = df.dropna(subset=['부품사', '자재코드', '사용전압(V)'])
-    
-    # 수치형 컬럼 변환
-    numeric_cols = ['정격전압(V)', '정격용량(uF)', '사용전압(V)', 'Ea', 'n', '형상모수', '척도모수']
-    # 온도시험 결과 컬럼 (65℃ ~ 125℃)
-    temp_cols = [c for c in df.columns if '℃' in str(c)]
-    
-    for col in numeric_cols + temp_cols:
+# ============================================================
+# 1. 기본 설정
+# ============================================================
+
+st.set_page_config(
+    page_title="MLCC 수명 Dashboard",
+    page_icon="📊",
+    layout="wide",
+)
+
+
+# Excel 파일 위치
+BASE_DIR = Path(__file__).resolve().parent
+EXCEL_FILE = BASE_DIR / "test_수명.xlsx"
+
+# Excel 원본 시트명
+SHEET_NAME = "수명"
+
+# Excel에서 실제 데이터 헤더가 위치한 행
+# 원본 파일 기준:
+# 6행 = MLCC 정보 / 가속평가 기반...
+# 7행 = 실제 컬럼명
+#
+# pandas는 0부터 세므로 header=6
+HEADER_ROW = 6
+
+
+# ============================================================
+# 2. 디자인
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 3rem;
+            max-width: 1600px;
+        }
+
+        h1 {
+            color: #17365D;
+        }
+
+        div[data-testid="stMetric"] {
+            background-color: #F7F9FC;
+            border: 1px solid #E2E8F0;
+            padding: 15px;
+            border-radius: 10px;
+        }
+
+        div[data-testid="stMetricLabel"] {
+            font-weight: 600;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# 3. Excel 데이터 읽기
+# ============================================================
+
+@st.cache_data
+def load_data(file_path: str, modified_time: float):
+    """
+    Excel 데이터를 읽는 함수.
+
+    modified_time을 인자로 받는 이유:
+    Excel 파일이 수정되면 수정 시간이 달라지므로
+    Streamlit cache가 자동으로 무효화되어 최신 데이터를 읽게 된다.
+    """
+
+    df = pd.read_excel(
+        file_path,
+        sheet_name=SHEET_NAME,
+        header=HEADER_ROW,
+        engine="openpyxl",
+    )
+
+    # 완전히 비어있는 행 제거
+    df = df.dropna(how="all")
+
+    # 컬럼명 공백 제거
+    df.columns = [str(col).strip() for col in df.columns]
+
+    # 핵심 필드가 없는 행 제거
+    required_columns = [
+        "자재코드",
+        "부품사",
+        "사용전압(V)",
+    ]
+
+    df = df.dropna(
+        subset=[
+            col
+            for col in required_columns
+            if col in df.columns
+        ]
+    )
+
+    # 문자열 데이터 정리
+    for col in ["자재코드", "부품사", "부품사코드", "Grade", "Bx수명"]:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-    df['사용전압(V)'] = df['사용전압(V)'].astype(str) + "V"
-    return df, temp_cols
+            df[col] = df[col].astype(str).str.strip()
 
-# 엑셀 데이터 불러오기
-EXCEL_FILE = 'test_수명.xlsx'
-try:
-    df, temp_cols = load_data(EXCEL_FILE)
-except Exception as e:
-    st.error(f"엑셀 파일을 읽는 중 오류가 발생했습니다: {e}")
+    # 사용전압 숫자로 변환
+    if "사용전압(V)" in df.columns:
+        df["사용전압(V)"] = pd.to_numeric(
+            df["사용전압(V)"],
+            errors="coerce",
+        )
+
+    # 온도별 수명 컬럼 숫자 변환
+    temperature_columns = [
+        "65℃",
+        "70℃",
+        "75℃",
+        "80℃",
+        "85℃",
+        "90℃",
+        "95℃",
+        "100℃",
+        "105℃",
+        "110℃",
+        "115℃",
+        "120℃",
+        "125℃",
+    ]
+
+    for col in temperature_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce",
+            )
+
+    return df
+
+
+# ============================================================
+# 4. Excel 파일 확인
+# ============================================================
+
+if not EXCEL_FILE.exists():
+
+    st.error(
+        f"""
+        Excel 파일을 찾을 수 없습니다.
+
+        아래 위치에 파일이 있어야 합니다.
+
+        {EXCEL_FILE}
+        """
+    )
+
     st.stop()
 
-st.title("🔬 MLCC 가속평가 및 수명 산출 대시보드")
-st.markdown("---")
 
-# ---------------------------------------------------------
-# 1. 캐스케이딩 필터링 (요구사항 1: 부품사 -> 자재코드 -> 사용전압 계층 선택)
-# ---------------------------------------------------------
-st.sidebar.header("📌 데이터 선택 (필터)")
+# Excel 파일의 마지막 수정 시간
+modified_time = EXCEL_FILE.stat().st_mtime
 
-# 1-1. 부품사 선택
-supplier_list = sorted(df['부품사'].unique().tolist())
-selected_supplier = st.sidebar.selectbox("1. 부품사 선택", supplier_list)
 
-# 1-2. 부품사 조건에 맞는 자재코드만 추출하여 선택
-filtered_by_supplier = df[df['부품사'] == selected_supplier]
-code_list = sorted(filtered_by_supplier['자재코드'].unique().tolist())
-selected_code = st.sidebar.selectbox("2. 자재코드 선택", code_list)
+try:
 
-# 1-3. 부품사 & 자재코드 조건에 존재하는 사용전압만 추출하여 선택 (없는 전압은 자동 제외)
-filtered_by_code = filtered_by_supplier[filtered_by_supplier['자재코드'] == selected_code]
-voltage_list = sorted(filtered_by_code['사용전압(V)'].unique().tolist())
-selected_voltage = st.sidebar.selectbox("3. 사용전압(V) 선택", voltage_list)
+    df = load_data(
+        str(EXCEL_FILE),
+        modified_time,
+    )
 
-# 최종 선택 데이터 추출
-selected_row = filtered_by_code[filtered_by_code['사용전압(V)'] == selected_voltage].iloc[0]
+except Exception as e:
 
-# ---------------------------------------------------------
-# 2. 정보 표현 (요구사항 2: 선택된 조건의 깔끔한 카드 및 상세 정보 표기)
-# ---------------------------------------------------------
-st.subheader(f"📋 [{selected_supplier}] {selected_code} ({selected_voltage}) 상세 정보")
+    st.error("Excel 파일을 읽는 중 오류가 발생했습니다.")
 
-# Key Metrics 표시
-m1, m2, m3, m4, m5, m6 = st.columns(6)
-m1.metric("업데이트일자", str(selected_row['업데이트일자'])[:10])
-m2.metric("부품사코드", selected_row['부품사코드'])
-m3.metric("Grade / Size", f"{selected_row['Grade']} / {selected_row['Size']}")
-m4.metric("정격전압 / 정격용량", f"{selected_row['정격전압(V)']}V / {selected_row['정격용량(uF)']}uF")
-m5.metric("Bx수명", selected_row['Bx수명'])
-m6.metric("Ea / n", f"{selected_row['Ea']} / {selected_row['n']}")
+    st.exception(e)
 
-# 상세 파라미터 표
-st.markdown("#### ⚙️ 신뢰성 파라미터 상세")
-param_df = pd.DataFrame([{
-    '형상모수(Beta)': selected_row['형상모수'],
-    '척도모수(Eta)': selected_row['척도모수'],
-    'Ea (활성화에너지)': selected_row['Ea'],
-    'n (전압가속지수)': selected_row['n']
-}])
-st.dataframe(param_df, use_container_width=True, hide_index=True)
+    st.stop()
 
-st.markdown("---")
 
-# ---------------------------------------------------------
-# 3. 그래프 표현 (요구사항 3: 온도별 수명 산출결과 + 부품사 간 동 자재코드 수명 비교)
-# ---------------------------------------------------------
-col1, col2 = st.columns(2)
+# ============================================================
+# 5. 필요한 컬럼 확인
+# ============================================================
+
+required_columns = [
+    "업데이트일자",
+    "자재코드",
+    "부품사",
+    "부품사코드",
+    "Grade",
+    "정격전압(V)",
+    "정격용량(uF)",
+    "Size",
+    "사용전압(V)",
+    "Bx수명",
+    "Ea",
+    "n",
+    "형상모수",
+    "척도모수",
+]
+
+
+missing_columns = [
+    col
+    for col in required_columns
+    if col not in df.columns
+]
+
+
+if missing_columns:
+
+    st.error(
+        "Excel에서 필요한 컬럼을 찾을 수 없습니다."
+    )
+
+    st.write("없는 컬럼:")
+
+    st.write(missing_columns)
+
+    st.write("현재 Excel 컬럼:")
+
+    st.write(list(df.columns))
+
+    st.stop()
+
+
+# ============================================================
+# 6. 제목
+# ============================================================
+
+st.title("MLCC 수명 Dashboard")
+
+st.caption(
+    "부품사 → 자재코드 → 사용전압(V)을 선택하면 "
+    "해당 조건의 MLCC 정보와 가속평가 기반 수명산출결과를 표시합니다."
+)
+
+
+# ============================================================
+# 7. 사이드바
+# ============================================================
+
+with st.sidebar:
+
+    st.header("조회 조건")
+
+    if st.button(
+        "데이터 새로고침",
+        use_container_width=True,
+    ):
+
+        st.cache_data.clear()
+
+        st.rerun()
+
+    st.divider()
+
+
+    # --------------------------------------------------------
+    # 부품사
+    # --------------------------------------------------------
+
+    supplier_list = sorted(
+        df["부품사"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
+
+
+    selected_supplier = st.selectbox(
+        "부품사",
+        supplier_list,
+    )
+
+
+    # --------------------------------------------------------
+    # 자재코드
+    # --------------------------------------------------------
+
+    supplier_df = df[
+        df["부품사"] == selected_supplier
+    ]
+
+
+    material_list = sorted(
+        supplier_df["자재코드"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
+
+
+    selected_material = st.selectbox(
+        "자재코드",
+        material_list,
+    )
+
+
+    # --------------------------------------------------------
+    # 사용전압
+    # --------------------------------------------------------
+
+    material_df = supplier_df[
+        supplier_df["자재코드"]
+        == selected_material
+    ]
+
+
+    voltage_list = sorted(
+        material_df["사용전압(V)"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
+
+
+    selected_voltage = st.selectbox(
+        "사용전압(V)",
+        voltage_list,
+        format_func=lambda x: f"{x:g} V",
+    )
+
+
+# ============================================================
+# 8. 최종 선택 데이터
+# ============================================================
+
+selected_df = df[
+    (df["부품사"] == selected_supplier)
+    & (df["자재코드"] == selected_material)
+    & (df["사용전압(V)"] == selected_voltage)
+].copy()
+
+
+if selected_df.empty:
+
+    st.warning(
+        "선택한 조건에 해당하는 데이터가 없습니다."
+    )
+
+    st.stop()
+
+
+# 같은 조건의 데이터가 여러 개 있을 경우
+# 가장 마지막 행 사용
+selected_row = selected_df.iloc[-1]
+
+
+# ============================================================
+# 9. 선택 조건 표시
+# ============================================================
+
+st.subheader("선택 조건")
+
+
+col1, col2, col3 = st.columns(3)
+
 
 with col1:
-    st.subheader("🌡️ 가속평가 기반 온도별 수명산출결과")
-    
-    # 선택된 항목의 온도별 수명 데이터 구성
-    temp_data = pd.DataFrame({
-        '온도': temp_cols,
-        '수명시간': [selected_row[col] for col in temp_cols]
-    })
-    
-    fig_temp = px.line(
-        temp_data, 
-        x='온도', 
-        y='수명시간', 
-        markers=True,
-        title=f"온도 상승에 따른 기대수명 변화 ({selected_supplier} - {selected_code})",
-        labels={'수명시간': '수명 (시간)', '온도': '시험 온도'}
+
+    st.metric(
+        "부품사",
+        selected_supplier,
     )
-    fig_temp.update_traces(line_color='#2E86C1', line_width=3, marker_size=8)
-    fig_temp.update_layout(yaxis_type="log")  # Log Scale 적용으로 시각적 편의 제공
-    st.plotly_chart(fig_temp, use_container_width=True)
+
 
 with col2:
-    st.subheader(f"🏢 부품사 간 동일 자재코드({selected_code}) 수명 비교")
-    
-    # 동일한 자재코드 및 사용전압을 가진 타 부품사 데이터 추출
-    same_code_df = df[(df['자재코드'] == selected_code) & (df['사용전압(V)'] == selected_voltage)]
-    
-    # 비교를 위한 온도 선택 slider
-    selected_temp_for_comp = st.select_slider(
-        "비교할 온도를 선택하세요:", 
-        options=temp_cols, 
-        value='85℃' if '85℃' in temp_cols else temp_cols[0]
-    )
-    
-    fig_comp = px.bar(
-        same_code_df,
-        x='부품사',
-        y=selected_temp_for_comp,
-        color='부품사',
-        text_auto='.2f',
-        title=f"자재코드[{selected_code}] @ {selected_voltage}, {selected_temp_for_comp} 조건 수명 비교",
-        labels={selected_temp_for_comp: '수명 (시간)'}
-    )
-    fig_comp.update_layout(showlegend=False)
-    st.plotly_chart(fig_comp, use_container_width=True)
 
-st.sidebar.info("💡 엑셀 데이터가 수정되거나 추가되면 화면이 5초 이내에 자동 업데이트됩니다.")
+    st.metric(
+        "자재코드",
+        selected_material,
+    )
 
+
+with col3:
+
+    st.metric(
+        "사용전압",
+        f"{selected_voltage:g} V",
+    )
+
+
+# ============================================================
+# 10. MLCC 기본 정보
+# ============================================================
+
+st.subheader("MLCC 정보")
+
+
+info_columns = [
+    "업데이트일자",
+    "자재코드",
+    "부품사",
+    "부품사코드",
+    "Grade",
+    "정격전압(V)",
+    "정격용량(uF)",
+    "Size",
+    "사용전압(V)",
+]
+
+
+info_df = pd.DataFrame(
+    {
+        "항목": info_columns,
+        "값": [
+            selected_row.get(col, "")
+            for col in info_columns
+        ],
+    }
+)
+
+
+st.dataframe(
+    info_df,
+    use_container_width=True,
+    hide_index=True,
+)
+
+
+# ============================================================
+# 11. 수명 산출 Parameter
+# ============================================================
+
+st.subheader("가속평가 기반, 수명산출 Parameter")
+
+
+parameter_columns = [
+    "Bx수명",
+    "Ea",
+    "n",
+    "형상모수",
+    "척도모수",
+]
+
+
+parameter_cols = st.columns(
+    len(parameter_columns)
+)
+
+
+for column, parameter in zip(
+    parameter_cols,
+    parameter_columns,
+):
+
+    value = selected_row.get(
+        parameter,
+        "",
+    )
+
+    column.metric(
+        parameter,
+        value,
+    )
+
+
+# ============================================================
+# 12. 온도별 수명 데이터
+# ============================================================
+
+temperature_columns = [
+    "65℃",
+    "70℃",
+    "75℃",
+    "80℃",
+    "85℃",
+    "90℃",
+    "95℃",
+    "100℃",
+    "105℃",
+    "110℃",
+    "115℃",
+    "120℃",
+    "125℃",
+]
+
+
+available_temperature_columns = [
+    col
+    for col in temperature_columns
+    if col in df.columns
+]
+
+
+temperature_df = pd.DataFrame(
+    {
+        "온도": [
+            int(
+                col.replace(
+                    "℃",
+                    "",
+                )
+            )
+            for col
+            in available_temperature_columns
+        ],
+
+        "수명": [
+            selected_row[col]
+            for col
+            in available_temperature_columns
+        ],
+    }
+)
+
+
+temperature_df = temperature_df.dropna(
+    subset=["수명"]
+)
+
+
+# ============================================================
+# 13. 선택 데이터 온도별 수명 그래프
+# ============================================================
+
+st.subheader("선택 부품 온도별 수명")
+
+
+fig_selected = px.line(
+    temperature_df,
+    x="온도",
+    y="수명",
+    markers=True,
+)
+
+
+fig_selected.update_layout(
+    xaxis_title="온도 (℃)",
+    yaxis_title="수명",
+    hovermode="x unified",
+    height=450,
+)
+
+
+fig_selected.update_traces(
+    line=dict(
+        width=3,
+    ),
+    marker=dict(
+        size=8,
+    ),
+)
+
+
+st.plotly_chart(
+    fig_selected,
+    use_container_width=True,
+)
+
+
+# ============================================================
+# 14. 온도별 수명 표
+# ============================================================
+
+with st.expander(
+    "온도별 수명 데이터 보기",
+    expanded=False,
+):
+
+    table_df = temperature_df.copy()
+
+    table_df["온도"] = (
+        table_df["온도"]
+        .astype(str)
+        + "℃"
+    )
+
+    st.dataframe(
+        table_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ============================================================
+# 15. 동일 자재코드 부품사 비교
+# ============================================================
+
+st.subheader(
+    "동일 자재코드 수명 비교"
+)
+
+
+st.caption(
+    f"자재코드 {selected_material} / "
+    f"사용전압 {selected_voltage:g} V 기준"
+)
+
+
+comparison_source = df[
+    (df["자재코드"] == selected_material)
+    & (df["사용전압(V)"] == selected_voltage)
+].copy()
+
+
+comparison_rows = []
+
+
+for _, row in comparison_source.iterrows():
+
+    supplier = row["부품사"]
+
+    for temp_col in available_temperature_columns:
+
+        life = row[temp_col]
+
+        if pd.notna(life):
+
+            comparison_rows.append(
+                {
+                    "부품사": supplier,
+                    "온도": int(
+                        temp_col.replace(
+                            "℃",
+                            "",
+                        )
+                    ),
+                    "수명": life,
+                }
+            )
+
+
+comparison_df = pd.DataFrame(
+    comparison_rows
+)
+
+
+# ============================================================
+# 16. 부품사 비교 그래프
+# ============================================================
+
+if not comparison_df.empty:
+
+    fig_compare = px.line(
+        comparison_df,
+        x="온도",
+        y="수명",
+        color="부품사",
+        markers=True,
+    )
+
+
+    fig_compare.update_layout(
+        xaxis_title="온도 (℃)",
+        yaxis_title="수명",
+        hovermode="x unified",
+        height=550,
+        legend_title="부품사",
+    )
+
+
+    fig_compare.update_traces(
+        line=dict(
+            width=3,
+        ),
+        marker=dict(
+            size=8,
+        ),
+    )
+
+
+    st.plotly_chart(
+        fig_compare,
+        use_container_width=True,
+    )
+
+
+else:
+
+    st.info(
+        "비교할 수명 데이터가 없습니다."
+    )
+
+
+# ============================================================
+# 17. 부품사 비교 데이터 표
+# ============================================================
+
+with st.expander(
+    "부품사 비교 원본 데이터 보기",
+):
+
+    display_columns = [
+        "부품사",
+        "자재코드",
+        "사용전압(V)",
+    ] + available_temperature_columns
+
+
+    st.dataframe(
+        comparison_source[
+            display_columns
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ============================================================
+# 18. 전체 Excel 데이터
+# ============================================================
+
+with st.expander(
+    "전체 데이터 보기",
+):
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ============================================================
+# 19. 데이터 정보
+# ============================================================
+
+st.divider()
+
+
+c1, c2, c3 = st.columns(3)
+
+
+with c1:
+
+    st.caption(
+        f"전체 데이터: {len(df):,}건"
+    )
+
+
+with c2:
+
+    st.caption(
+        f"부품사: {df['부품사'].nunique():,}개"
+    )
+
+
+with c3:
+
+    st.caption(
+        f"자재코드: {df['자재코드'].nunique():,}개"
+    )
