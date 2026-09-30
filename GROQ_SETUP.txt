@@ -1,0 +1,15 @@
+Groq + Excel + 자동 fallback 설정
+
+1) Groq Console에서 API Key 생성
+2) Streamlit Cloud > App > Settings > Secrets
+3) 아래 두 줄 등록:
+   GROQ_API_KEY = "gsk_..."
+   GROQ_MODEL = "openai/gpt-oss-20b"
+
+동작:
+- Groq 정상: LLM이 자연어 질문의 intent/자재코드/부품사/전압/온도만 해석
+- 실제 수명/Aging/BDV 데이터 조회 및 계산: 기존 Excel/Pandas 코드
+- API Key 없음, 429 rate limit, 인증/네트워크/API 오류, JSON 파싱 실패:
+  기존 규칙 기반 chatbot_engine으로 자동 fallback
+- Excel 전체 행/평가 숫자는 질문 해석 단계에서 Groq로 전송하지 않음
+- GitHub에 실제 secrets.toml 또는 API Key를 커밋하지 말 것
