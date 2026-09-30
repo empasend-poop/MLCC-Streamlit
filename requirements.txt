@@ -3,3 +3,4 @@ pandas
 numpy
 openpyxl
 plotly
+groq>=0.31.0
