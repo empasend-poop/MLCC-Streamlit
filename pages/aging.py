@@ -1,4 +1,6 @@
 ```python
+import re
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -9,15 +11,8 @@ from utils.data_loader import get_aging_data
 
 
 # ============================================================
-# HELPER FUNCTIONS
+# 1. 공통 함수
 # ============================================================
-
-def clean_text(value):
-    """문자열 데이터 정리"""
-    if pd.isna(value):
-        return ""
-    return str(value).strip()
-
 
 def format_number(value, digits=4):
     """일반 숫자 표시"""
@@ -32,10 +27,8 @@ def format_number(value, digits=4):
 
 def format_percent(value):
     """
-    Excel 값이
-    0.95 -> 95%
-    95   -> 95%
-    어느 형태든 대응
+    Excel 값이 0.95이면 95.00%
+    Excel 값이 95이면 95.00%
     """
     if pd.isna(value):
         return "-"
@@ -51,16 +44,19 @@ def format_percent(value):
     return f"{value:.2f}%"
 
 
-def percent_value(value):
+def percent_to_number(value):
     """
-    Plotly용 percentage 숫자 변환.
+    그래프용 백분율 숫자 변환
     0.95 -> 95
     95   -> 95
     """
     if pd.isna(value):
         return np.nan
 
-    value = float(value)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return np.nan
 
     if abs(value) <= 1:
         value *= 100
@@ -68,67 +64,111 @@ def percent_value(value):
     return value
 
 
-def latest_rows(data, subset):
-    """업데이트일자가 있을 경우 조건별 최신 데이터만 유지"""
+def get_latest_rows(data, subset):
+    """동일 조건 데이터가 여러 개이면 최신 행 사용"""
 
     result = data.copy()
 
-    if "업데이트일자" not in result.columns:
-        return result.drop_duplicates(
-            subset=subset,
-            keep="last",
+    if result.empty:
+        return result
+
+    if "업데이트일자" in result.columns:
+        result["_update_date"] = pd.to_datetime(
+            result["업데이트일자"],
+            errors="coerce",
         )
 
-    result["_sort_date"] = pd.to_datetime(
-        result["업데이트일자"],
-        errors="coerce",
+        result = result.sort_values(
+            "_update_date"
+        )
+
+    result = result.drop_duplicates(
+        subset=subset,
+        keep="last",
     )
 
-    result = (
-        result
-        .sort_values("_sort_date")
-        .drop_duplicates(
-            subset=subset,
-            keep="last",
+    result = result.drop(
+        columns=["_update_date"],
+        errors="ignore",
+    )
+
+    return result
+
+
+def find_hour_columns(columns):
+    """
+    Excel에 있는 시간 컬럼을 자동 탐색.
+
+    예:
+    24hr
+    48hr
+    1,000hr
+    2000hr
+
+    새로운 시간 컬럼이 추가되어도 자동 인식.
+    """
+
+    result = []
+
+    pattern = re.compile(
+        r"^\s*([\d,]+)\s*hr\s*$",
+        re.IGNORECASE,
+    )
+
+    for column in columns:
+        match = pattern.match(str(column))
+
+        if not match:
+            continue
+
+        hour_text = match.group(1).replace(",", "")
+
+        try:
+            hour = int(hour_text)
+        except ValueError:
+            continue
+
+        result.append(
+            (column, hour)
         )
-        .drop(
-            columns="_sort_date",
-            errors="ignore",
-        )
+
+    result.sort(
+        key=lambda item: item[1]
     )
 
     return result
 
 
 # ============================================================
-# DATA LOAD
+# 2. 데이터 로드
 # ============================================================
 
 try:
     df = get_aging_data().copy()
 
-except Exception as e:
-
+except Exception as error:
     st.error(
         "Aging Excel 데이터를 불러오는 중 오류가 발생했습니다."
     )
-
-    st.exception(e)
-
+    st.exception(error)
     st.stop()
 
 
 # ============================================================
-# COLUMN CLEANING
+# 3. 컬럼명 정리
 # ============================================================
 
 df.columns = [
-    str(col)
+    str(column)
     .replace("\n", " ")
     .strip()
-    for col in df.columns
+    for column in df.columns
 ]
 
+
+# ============================================================
+# 4. 필수 컬럼 확인
+# ============================================================
 
 required_columns = [
     "부품사",
@@ -136,48 +176,65 @@ required_columns = [
     "시험전압",
 ]
 
-
 missing_columns = [
-    col
-    for col in required_columns
-    if col not in df.columns
+    column
+    for column in required_columns
+    if column not in df.columns
 ]
 
-
 if missing_columns:
-
     st.error(
-        "Aging Excel에 필요한 컬럼이 없습니다: "
-        + ", ".join(missing_columns)
+        "Aging Excel에서 필요한 컬럼을 찾을 수 없습니다."
+    )
+
+    st.write(
+        "없는 컬럼:",
+        missing_columns,
+    )
+
+    st.write(
+        "현재 Excel 컬럼:",
+        list(df.columns),
     )
 
     st.stop()
 
 
 # ============================================================
-# STRING COLUMNS
+# 5. 빈 행 제거
+# ============================================================
+
+df = df.dropna(
+    subset=[
+        "부품사",
+        "자재코드",
+        "시험전압",
+    ]
+).copy()
+
+
+# ============================================================
+# 6. 문자열 데이터 정리
 # ============================================================
 
 string_columns = [
-    "자재코드",
     "부품사",
+    "자재코드",
     "부품사코드",
     "Grade",
 ]
 
-
-for col in string_columns:
-
-    if col in df.columns:
-
-        df[col] = (
-            df[col]
-            .apply(clean_text)
+for column in string_columns:
+    if column in df.columns:
+        df[column] = (
+            df[column]
+            .astype(str)
+            .str.strip()
         )
 
 
 # ============================================================
-# NUMERIC COLUMNS
+# 7. 숫자형 데이터 정리
 # ============================================================
 
 numeric_columns = [
@@ -186,98 +243,79 @@ numeric_columns = [
     "Size",
     "시험전압",
     "시험온도",
-
     "① 25℃, 0V",
     "②고온+No Bias",
     "③ 고온+DC Bias",
     "△C (①-③)/①",
-
-    "24hr",
-    "48hr",
-    "72hr",
-    "96hr",
-    "200hr",
-    "500hr",
-    "1,000hr",
-
-    "8,760hr",
-    "43,800hr",
-    "61,320hr",
-    "87,600hr",
-
     "7년 (-20%반영)",
     "10년 (-20%반영)",
-
     "7년 잔여율",
     "7년 감소율",
-
     "10년 잔여율",
     "10년 감소율",
-
     "결정계수 (R^2)",
 ]
 
+# 시간 컬럼 자동 탐색
+hour_columns = find_hour_columns(
+    df.columns
+)
 
-for col in numeric_columns:
+for column, _ in hour_columns:
+    numeric_columns.append(column)
 
-    if col in df.columns:
 
-        df[col] = pd.to_numeric(
-            df[col],
+for column in numeric_columns:
+    if column in df.columns:
+        df[column] = pd.to_numeric(
+            df[column],
             errors="coerce",
         )
 
 
 # ============================================================
-# PAGE TITLE
+# 8. 페이지 제목
 # ============================================================
 
 st.title("📉 MLCC Aging 분석")
 
 st.caption(
     "Aging 실측 데이터와 Excel 장기 산출결과를 기반으로 "
-    "MLCC의 시간 경과에 따른 용량 변화를 분석합니다."
+    "시간 경과에 따른 MLCC 용량 변화를 분석합니다."
 )
 
 
 # ============================================================
-# SIDEBAR
+# 9. Sidebar
 # ============================================================
 
 with st.sidebar:
-
     st.header("Aging 분석 조건")
 
     if st.button(
         "Aging 데이터 새로고침",
         use_container_width=True,
+        key="aging_refresh",
     ):
-
         st.cache_data.clear()
         st.rerun()
 
     st.divider()
 
     # --------------------------------------------------------
-    # Supplier
+    # 부품사
     # --------------------------------------------------------
 
     supplier_list = sorted(
         df["부품사"]
         .dropna()
-        .loc[
-            lambda x: x != ""
-        ]
         .unique()
         .tolist()
     )
 
-
     if not supplier_list:
-
         st.error("부품사 데이터가 없습니다.")
         st.stop()
-
 
     selected_supplier = st.selectbox(
         "부품사",
@@ -285,35 +323,26 @@ with st.sidebar:
         key="aging_supplier",
     )
 
-
     # --------------------------------------------------------
-    # Material
+    # 자재코드
     # --------------------------------------------------------
 
     supplier_df = df[
-        df["부품사"]
-        == selected_supplier
+        df["부품사"] == selected_supplier
     ].copy()
-
 
     material_list = sorted(
         supplier_df["자재코드"]
         .dropna()
-        .loc[
-            lambda x: x != ""
-        ]
         .unique()
         .tolist()
     )
 
-
     if not material_list:
-
         st.warning(
             "선택한 부품사에 자재코드가 없습니다."
         )
         st.stop()
-
 
     selected_material = st.selectbox(
         "자재코드",
@@ -321,16 +350,13 @@ with st.sidebar:
         key="aging_material",
     )
 
-
     # --------------------------------------------------------
-    # Test Voltage
+    # 시험전압
     # --------------------------------------------------------
 
     material_df = supplier_df[
-        supplier_df["자재코드"]
-        == selected_material
+        supplier_df["자재코드"] == selected_material
     ].copy()
-
 
     voltage_list = sorted(
         material_df["시험전압"]
@@ -339,25 +365,22 @@ with st.sidebar:
         .tolist()
     )
 
-
     if not voltage_list:
-
         st.warning(
             "선택한 자재코드에 시험전압 데이터가 없습니다."
         )
         st.stop()
 
-
     selected_voltage = st.selectbox(
         "시험전압(V)",
         voltage_list,
-        format_func=lambda x: f"{x:g} V",
+        format_func=lambda value: f"{value:g} V",
         key="aging_voltage",
     )
 
 
 # ============================================================
-# SELECTED DATA
+# 10. 선택 데이터
 # ============================================================
 
 selected_df = df[
@@ -366,17 +389,14 @@ selected_df = df[
     & (df["시험전압"] == selected_voltage)
 ].copy()
 
-
 if selected_df.empty:
-
     st.warning(
         "선택 조건에 해당하는 Aging 데이터가 없습니다."
     )
-
     st.stop()
 
 
-selected_df = latest_rows(
+selected_df = get_latest_rows(
     selected_df,
     subset=[
         "부품사",
@@ -385,45 +405,38 @@ selected_df = latest_rows(
     ],
 )
 
-
 selected_row = selected_df.iloc[-1]
 
 
 # ============================================================
-# SUMMARY
+# 11. 선택 조건
 # ============================================================
 
 st.subheader("선택 조건")
 
+col1, col2, col3, col4 = st.columns(4)
 
-c1, c2, c3, c4 = st.columns(4)
-
-
-c1.metric(
+col1.metric(
     "부품사",
     selected_supplier,
 )
 
-
-c2.metric(
+col2.metric(
     "자재코드",
     selected_material,
 )
 
-
-c3.metric(
+col3.metric(
     "시험전압",
     f"{selected_voltage:g} V",
 )
-
 
 test_temperature = selected_row.get(
     "시험온도",
     np.nan,
 )
 
-
-c4.metric(
+col4.metric(
     "시험온도",
     (
         f"{test_temperature:g} ℃"
@@ -434,14 +447,12 @@ c4.metric(
 
 
 # ============================================================
-# BASIC INFORMATION
+# 12. MLCC 기본 정보
 # ============================================================
 
 st.subheader("MLCC 기본 정보")
 
-
-i1, i2, i3, i4 = st.columns(4)
-
+info1, info2, info3, info4 = st.columns(4)
 
 rated_voltage = selected_row.get(
     "정격전압(V)",
@@ -463,8 +474,7 @@ size = selected_row.get(
     np.nan,
 )
 
-
-i1.metric(
+info1.metric(
     "정격전압",
     (
         f"{rated_voltage:g} V"
@@ -473,8 +483,7 @@ i1.metric(
     ),
 )
 
-
-i2.metric(
+info2.metric(
     "정격용량",
     (
         f"{rated_capacity:g} µF"
@@ -483,133 +492,120 @@ i2.metric(
     ),
 )
 
-
-i3.metric(
+info3.metric(
     "Grade",
     grade if grade else "-",
 )
 
-
-i4.metric(
+info4.metric(
     "Size",
     format_number(size),
 )
 
 
 # ============================================================
-# INITIAL AGING RESULT
+# 13. 초기 Aging 평가
 # ============================================================
 
 st.subheader("초기 Aging 평가결과")
 
-
-initial_cap = selected_row.get(
+initial_capacity = selected_row.get(
     "① 25℃, 0V",
     np.nan,
 )
 
-no_bias = selected_row.get(
+no_bias_capacity = selected_row.get(
     "②고온+No Bias",
     np.nan,
 )
 
-dc_bias = selected_row.get(
+dc_bias_capacity = selected_row.get(
     "③ 고온+DC Bias",
     np.nan,
 )
 
-delta_c = selected_row.get(
+delta_capacity = selected_row.get(
     "△C (①-③)/①",
     np.nan,
 )
 
+metric1, metric2, metric3, metric4 = st.columns(4)
 
-m1, m2, m3, m4 = st.columns(4)
-
-
-m1.metric(
+metric1.metric(
     "25℃ / 0V",
     (
-        f"{initial_cap:.4f} µF"
-        if pd.notna(initial_cap)
+        f"{initial_capacity:.4f} µF"
+        if pd.notna(initial_capacity)
         else "-"
     ),
 )
 
-
-m2.metric(
+metric2.metric(
     "고온 / No Bias",
     (
-        f"{no_bias:.4f} µF"
-        if pd.notna(no_bias)
+        f"{no_bias_capacity:.4f} µF"
+        if pd.notna(no_bias_capacity)
         else "-"
     ),
 )
 
-
-m3.metric(
+metric3.metric(
     "고온 / DC Bias",
     (
-        f"{dc_bias:.4f} µF"
-        if pd.notna(dc_bias)
+        f"{dc_bias_capacity:.4f} µF"
+        if pd.notna(dc_bias_capacity)
         else "-"
     ),
 )
 
-
-m4.metric(
+metric4.metric(
     "초기 대비 ΔC",
-    format_percent(delta_c),
+    format_percent(delta_capacity),
 )
 
 
 # ============================================================
-# AGING DATA DEFINITIONS
+# 14. 시간 데이터 분리
 # ============================================================
 
-measured_time_map = {
-    "24hr": 24,
-    "48hr": 48,
-    "72hr": 72,
-    "96hr": 96,
-    "200hr": 200,
-    "500hr": 500,
-    "1,000hr": 1000,
-}
+# 1,000시간 이하 = 실측 영역
+# 그보다 큰 시간 = 장기 산출 영역
+#
+# 필요하면 기준값만 변경하면 됨.
+MEASURED_MAX_HOUR = 1000
 
+measured_hour_columns = [
+    (column, hour)
+    for column, hour in hour_columns
+    if hour <= MEASURED_MAX_HOUR
+]
 
-long_term_map = {
-    "8,760hr": 8760,
-    "43,800hr": 43800,
-    "61,320hr": 61320,
-    "87,600hr": 87600,
-}
+long_term_hour_columns = [
+    (column, hour)
+    for column, hour in hour_columns
+    if hour > MEASURED_MAX_HOUR
+]
 
 
 # ============================================================
-# MEASURED DATAFRAME
+# 15. 실측 Aging DataFrame
 # ============================================================
 
 measured_rows = []
 
-
-for column, hour in measured_time_map.items():
-
-    if column not in selected_row.index:
-        continue
-
-    value = selected_row[column]
+for column, hour in measured_hour_columns:
+    value = selected_row.get(
+        column,
+        np.nan,
+    )
 
     if pd.notna(value):
-
         measured_rows.append(
             {
                 "시간(hr)": hour,
                 "잔여용량(uF)": float(value),
-                "구분": "실측",
             }
         )
-
 
 measured_df = pd.DataFrame(
     measured_rows
@@ -617,29 +613,24 @@ measured_df = pd.DataFrame(
 
 
 # ============================================================
-# LONG TERM DATAFRAME
+# 16. 장기 Aging DataFrame
 # ============================================================
 
 long_term_rows = []
 
-
-for column, hour in long_term_map.items():
-
-    if column not in selected_row.index:
-        continue
-
-    value = selected_row[column]
+for column, hour in long_term_hour_columns:
+    value = selected_row.get(
+        column,
+        np.nan,
+    )
 
     if pd.notna(value):
-
         long_term_rows.append(
             {
                 "시간(hr)": hour,
                 "잔여용량(uF)": float(value),
-                "구분": "장기 산출",
             }
         )
-
 
 long_term_df = pd.DataFrame(
     long_term_rows
@@ -647,7 +638,7 @@ long_term_df = pd.DataFrame(
 
 
 # ============================================================
-# TAB STRUCTURE
+# 17. Tabs
 # ============================================================
 
 tab1, tab2, tab3, tab4 = st.tabs(
@@ -661,893 +652,25 @@ tab1, tab2, tab3, tab4 = st.tabs(
 
 
 # ============================================================
-# TAB 1 : CAPACITY
+# 18. TAB 1 - Aging 추이
 # ============================================================
 
 with tab1:
-
     st.subheader(
         "시간경과에 따른 Aging 특성"
     )
 
-    fig = go.Figure()
-
-
-    # --------------------------------------------------------
-    # Measured data
-    # --------------------------------------------------------
+    fig_aging = go.Figure()
 
     if not measured_df.empty:
-
-        fig.add_trace(
+        fig_aging.add_trace(
             go.Scatter(
                 x=measured_df["시간(hr)"],
                 y=measured_df["잔여용량(uF)"],
-
                 mode="lines+markers",
-
                 name="Aging 실측",
-
-                marker=dict(
-                    size=9,
-                ),
-
                 line=dict(
                     width=3,
                 ),
-
-                hovertemplate=(
-                    "시간: %{x:,.0f} hr"
-                    "<br>잔여용량: %{y:.5f} µF"
-                    "<extra></extra>"
-                ),
-            )
-        )
-
-
-    # --------------------------------------------------------
-    # Long term Excel result
-    # --------------------------------------------------------
-
-    if not long_term_df.empty:
-
-        fig.add_trace(
-            go.Scatter(
-                x=long_term_df["시간(hr)"],
-                y=long_term_df["잔여용량(uF)"],
-
-                mode="markers",
-
-                name="Excel 장기 산출값",
-
                 marker=dict(
-                    size=12,
-                    symbol="diamond",
-                ),
-
-                hovertemplate=(
-                    "시간: %{x:,.0f} hr"
-                    "<br>잔여용량: %{y:.5f} µF"
-                    "<extra></extra>"
-                ),
-            )
-        )
-
-
-    fig.update_layout(
-        height=520,
-
-        xaxis_title="경과시간 (hr)",
-
-        yaxis_title="잔여용량 (µF)",
-
-        hovermode="closest",
-
-        legend_title="",
-
-        margin=dict(
-            l=20,
-            r=20,
-            t=30,
-            b=20,
-        ),
-    )
-
-
-    fig.update_xaxes(
-        type="log",
-    )
-
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-    )
-
-
-    st.caption(
-        "실선은 Aging 실측값이며, Diamond는 Excel에 저장된 "
-        "장기 Aging 산출값입니다. Python에서 별도의 장기 회귀를 "
-        "수행하지 않습니다."
-    )
-
-
-    # --------------------------------------------------------
-    # Data table
-    # --------------------------------------------------------
-
-    chart_table_parts = []
-
-
-    if not measured_df.empty:
-        chart_table_parts.append(
-            measured_df
-        )
-
-
-    if not long_term_df.empty:
-        chart_table_parts.append(
-            long_term_df
-        )
-
-
-    if chart_table_parts:
-
-        chart_table = pd.concat(
-            chart_table_parts,
-            ignore_index=True,
-        ).sort_values(
-            "시간(hr)"
-        )
-
-
-        with st.expander(
-            "그래프 원본 데이터"
-        ):
-
-            st.dataframe(
-                chart_table,
-                hide_index=True,
-                use_container_width=True,
-            )
-
-
-# ============================================================
-# TAB 2 : REMAINING RATE
-# ============================================================
-
-with tab2:
-
-    st.subheader(
-        "초기 대비 Aging 잔여율"
-    )
-
-
-    remaining_rows = []
-
-
-    if pd.notna(initial_cap) and initial_cap != 0:
-
-        # Initial reference
-        remaining_rows.append(
-            {
-                "시간(hr)": 0,
-                "잔여율(%)": 100.0,
-                "구분": "초기",
-            }
-        )
-
-
-        # Measured
-        for _, row in measured_df.iterrows():
-
-            remaining_rows.append(
-                {
-                    "시간(hr)":
-                        row["시간(hr)"],
-
-                    "잔여율(%)":
-                        (
-                            row["잔여용량(uF)"]
-                            / initial_cap
-                            * 100
-                        ),
-
-                    "구분":
-                        "실측",
-                }
-            )
-
-
-        # Long term
-        for _, row in long_term_df.iterrows():
-
-            remaining_rows.append(
-                {
-                    "시간(hr)":
-                        row["시간(hr)"],
-
-                    "잔여율(%)":
-                        (
-                            row["잔여용량(uF)"]
-                            / initial_cap
-                            * 100
-                        ),
-
-                    "구분":
-                        "장기 산출",
-                }
-            )
-
-
-    remaining_df = pd.DataFrame(
-        remaining_rows
-    )
-
-
-    if not remaining_df.empty:
-
-        # log 축에서는 0 표시 불가하므로
-        # 실제 그래프에서는 초기점을 제외
-        graph_remaining_df = remaining_df[
-            remaining_df["시간(hr)"] > 0
-        ].copy()
-
-
-        fig_remaining = go.Figure()
-
-
-        measured_remaining = graph_remaining_df[
-            graph_remaining_df["구분"]
-            == "실측"
-        ]
-
-
-        long_remaining = graph_remaining_df[
-            graph_remaining_df["구분"]
-            == "장기 산출"
-        ]
-
-
-        if not measured_remaining.empty:
-
-            fig_remaining.add_trace(
-                go.Scatter(
-                    x=measured_remaining[
-                        "시간(hr)"
-                    ],
-
-                    y=measured_remaining[
-                        "잔여율(%)"
-                    ],
-
-                    mode="lines+markers",
-
-                    name="Aging 실측",
-
-                    marker=dict(
-                        size=9,
-                    ),
-
-                    line=dict(
-                        width=3,
-                    ),
-
-                    hovertemplate=(
-                        "시간: %{x:,.0f} hr"
-                        "<br>잔여율: %{y:.4f}%"
-                        "<extra></extra>"
-                    ),
-                )
-            )
-
-
-        if not long_remaining.empty:
-
-            fig_remaining.add_trace(
-                go.Scatter(
-                    x=long_remaining[
-                        "시간(hr)"
-                    ],
-
-                    y=long_remaining[
-                        "잔여율(%)"
-                    ],
-
-                    mode="markers",
-
-                    name="장기 산출",
-
-                    marker=dict(
-                        size=12,
-                        symbol="diamond",
-                    ),
-
-                    hovertemplate=(
-                        "시간: %{x:,.0f} hr"
-                        "<br>잔여율: %{y:.4f}%"
-                        "<extra></extra>"
-                    ),
-                )
-            )
-
-
-        fig_remaining.update_layout(
-            height=500,
-
-            xaxis_title="경과시간 (hr)",
-
-            yaxis_title="초기 대비 잔여율 (%)",
-
-            hovermode="closest",
-
-            legend_title="",
-        )
-
-
-        fig_remaining.update_xaxes(
-            type="log",
-        )
-
-
-        st.plotly_chart(
-            fig_remaining,
-            use_container_width=True,
-        )
-
-
-        st.caption(
-            "잔여율 = 해당 시간의 잔여용량 ÷ 25℃/0V 초기용량 × 100"
-        )
-
-
-        display_remaining = (
-            remaining_df
-            .copy()
-        )
-
-
-        display_remaining[
-            "잔여율(%)"
-        ] = display_remaining[
-            "잔여율(%)"
-        ].round(4)
-
-
-        st.dataframe(
-            display_remaining,
-            hide_index=True,
-            use_container_width=True,
-        )
-
-
-    else:
-
-        st.info(
-            "초기용량 데이터가 없어 잔여율을 계산할 수 없습니다."
-        )
-
-
-# ============================================================
-# TAB 3 : LONG TERM RESULT
-# ============================================================
-
-with tab3:
-
-    st.subheader(
-        "장기 Aging 산출결과"
-    )
-
-
-    excel_r2 = selected_row.get(
-        "결정계수 (R^2)",
-        np.nan,
-    )
-
-
-    st.metric(
-        "Excel 결정계수 R²",
-        (
-            f"{excel_r2:.4f}"
-            if pd.notna(excel_r2)
-            else "-"
-        ),
-    )
-
-
-    st.markdown("#### 7년")
-
-
-    seven_capacity = selected_row.get(
-        "7년 (-20%반영)",
-        np.nan,
-    )
-
-    seven_remaining = selected_row.get(
-        "7년 잔여율",
-        np.nan,
-    )
-
-    seven_decrease = selected_row.get(
-        "7년 감소율",
-        np.nan,
-    )
-
-
-    s1, s2, s3 = st.columns(3)
-
-
-    s1.metric(
-        "7년 잔여용량",
-        (
-            f"{seven_capacity:.5f} µF"
-            if pd.notna(seven_capacity)
-            else "-"
-        ),
-    )
-
-
-    s2.metric(
-        "7년 잔여율",
-        format_percent(
-            seven_remaining
-        ),
-    )
-
-
-    s3.metric(
-        "7년 감소율",
-        format_percent(
-            seven_decrease
-        ),
-    )
-
-
-    st.markdown("#### 10년")
-
-
-    ten_capacity = selected_row.get(
-        "10년 (-20%반영)",
-        np.nan,
-    )
-
-    ten_remaining = selected_row.get(
-        "10년 잔여율",
-        np.nan,
-    )
-
-    ten_decrease = selected_row.get(
-        "10년 감소율",
-        np.nan,
-    )
-
-
-    t1, t2, t3 = st.columns(3)
-
-
-    t1.metric(
-        "10년 잔여용량",
-        (
-            f"{ten_capacity:.5f} µF"
-            if pd.notna(ten_capacity)
-            else "-"
-        ),
-    )
-
-
-    t2.metric(
-        "10년 잔여율",
-        format_percent(
-            ten_remaining
-        ),
-    )
-
-
-    t3.metric(
-        "10년 감소율",
-        format_percent(
-            ten_decrease
-        ),
-    )
-
-
-    # --------------------------------------------------------
-    # Long-term table
-    # --------------------------------------------------------
-
-    if not long_term_df.empty:
-
-        st.markdown(
-            "#### 시간별 장기 산출값"
-        )
-
-
-        long_display = (
-            long_term_df[
-                [
-                    "시간(hr)",
-                    "잔여용량(uF)",
-                ]
-            ]
-            .copy()
-        )
-
-
-        def hour_to_period(hour):
-
-            mapping = {
-                8760: "1년",
-                43800: "5년",
-                61320: "7년",
-                87600: "10년",
-            }
-
-            return mapping.get(
-                int(hour),
-                f"{hour:,.0f} hr",
-            )
-
-
-        long_display.insert(
-            0,
-            "기간",
-            long_display[
-                "시간(hr)"
-            ].apply(
-                hour_to_period
-            ),
-        )
-
-
-        if (
-            pd.notna(initial_cap)
-            and initial_cap != 0
-        ):
-
-            long_display[
-                "초기 대비 잔여율(%)"
-            ] = (
-                long_display[
-                    "잔여용량(uF)"
-                ]
-                / initial_cap
-                * 100
-            ).round(4)
-
-
-            long_display[
-                "초기 대비 감소율(%)"
-            ] = (
-                100
-                - long_display[
-                    "초기 대비 잔여율(%)"
-                ]
-            ).round(4)
-
-
-        st.dataframe(
-            long_display,
-            hide_index=True,
-            use_container_width=True,
-        )
-
-
-# ============================================================
-# TAB 4 : SUPPLIER COMPARISON
-# ============================================================
-
-with tab4:
-
-    st.subheader(
-        "동일 자재코드 부품사 Aging 비교"
-    )
-
-
-    st.caption(
-        f"자재코드 {selected_material}의 "
-        "부품사별 Aging 특성을 비교합니다."
-    )
-
-
-    same_voltage_only = st.checkbox(
-        "동일 시험전압 조건만 비교",
-        value=True,
-        key="aging_same_voltage",
-    )
-
-
-    comparison_source = df[
-        df["자재코드"]
-        == selected_material
-    ].copy()
-
-
-    if same_voltage_only:
-
-        comparison_source = comparison_source[
-            comparison_source["시험전압"]
-            == selected_voltage
-        ].copy()
-
-
-    comparison_source = latest_rows(
-        comparison_source,
-        subset=[
-            "부품사",
-            "자재코드",
-            "시험전압",
-        ],
-    )
-
-
-    comparison_rows = []
-
-
-    for _, row in comparison_source.iterrows():
-
-        supplier = row["부품사"]
-        voltage = row["시험전압"]
-
-
-        for column, hour in measured_time_map.items():
-
-            if column not in row.index:
-                continue
-
-
-            value = row[column]
-
-
-            if pd.notna(value):
-
-                comparison_rows.append(
-                    {
-                        "부품사":
-                            supplier,
-
-                        "시험전압":
-                            voltage,
-
-                        "시간(hr)":
-                            hour,
-
-                        "잔여용량(uF)":
-                            float(value),
-
-                        "구분":
-                            (
-                                f"{supplier} / "
-                                f"{voltage:g}V"
-                            ),
-                    }
-                )
-
-
-    comparison_df = pd.DataFrame(
-        comparison_rows
-    )
-
-
-    if not comparison_df.empty:
-
-        fig_compare = px.line(
-            comparison_df,
-
-            x="시간(hr)",
-
-            y="잔여용량(uF)",
-
-            color="구분",
-
-            markers=True,
-        )
-
-
-        fig_compare.update_traces(
-            line=dict(
-                width=3,
-            ),
-
-            marker=dict(
-                size=8,
-            ),
-        )
-
-
-        fig_compare.update_xaxes(
-            type="log",
-        )
-
-
-        fig_compare.update_layout(
-            height=520,
-
-            xaxis_title=
-                "경과시간 (hr)",
-
-            yaxis_title=
-                "잔여용량 (µF)",
-
-            legend_title="",
-
-            hovermode="closest",
-        )
-
-
-        st.plotly_chart(
-            fig_compare,
-            use_container_width=True,
-        )
-
-
-    else:
-
-        st.info(
-            "현재 조건에서 비교 가능한 Aging 데이터가 없습니다."
-        )
-
-
-    # ========================================================
-    # LONG TERM SUPPLIER COMPARISON
-    # ========================================================
-
-    st.markdown(
-        "#### 부품사별 7년 / 10년 잔여율"
-    )
-
-
-    supplier_long_rows = []
-
-
-    for _, row in comparison_source.iterrows():
-
-        supplier = row["부품사"]
-        voltage = row["시험전압"]
-
-
-        seven = percent_value(
-            row.get(
-                "7년 잔여율",
-                np.nan,
-            )
-        )
-
-
-        ten = percent_value(
-            row.get(
-                "10년 잔여율",
-                np.nan,
-            )
-        )
-
-
-        label = (
-            f"{supplier} / "
-            f"{voltage:g}V"
-        )
-
-
-        if pd.notna(seven):
-
-            supplier_long_rows.append(
-                {
-                    "부품사 / 시험전압":
-                        label,
-
-                    "기간":
-                        "7년",
-
-                    "잔여율(%)":
-                        seven,
-                }
-            )
-
-
-        if pd.notna(ten):
-
-            supplier_long_rows.append(
-                {
-                    "부품사 / 시험전압":
-                        label,
-
-                    "기간":
-                        "10년",
-
-                    "잔여율(%)":
-                        ten,
-                }
-            )
-
-
-    supplier_long_df = pd.DataFrame(
-        supplier_long_rows
-    )
-
-
-    if not supplier_long_df.empty:
-
-        fig_supplier_long = px.bar(
-            supplier_long_df,
-
-            x="부품사 / 시험전압",
-
-            y="잔여율(%)",
-
-            color="기간",
-
-            barmode="group",
-
-            text_auto=".2f",
-        )
-
-
-        fig_supplier_long.update_layout(
-            height=480,
-
-            xaxis_title="",
-
-            yaxis_title="잔여율 (%)",
-
-            legend_title="",
-        )
-
-
-        st.plotly_chart(
-            fig_supplier_long,
-            use_container_width=True,
-        )
-
-
-# ============================================================
-# RAW DATA
-# ============================================================
-
-st.divider()
-
-
-with st.expander(
-    "선택 데이터 전체 보기"
-):
-
-    st.dataframe(
-        selected_df,
-        hide_index=True,
-        use_container_width=True,
-    )
-
-
-with st.expander(
-    "전체 Aging 데이터"
-):
-
-    st.dataframe(
-        df,
-        hide_index=True,
-        use_container_width=True,
-    )
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.divider()
-
-
-f1, f2, f3 = st.columns(3)
-
-
-f1.caption(
-    f"Aging 데이터: {len(df):,}건"
-)
-
-
-f2.caption(
-    f"부품사: {df['부품사'].nunique():,}개"
-)
-
-
-f3.caption(
-    f"자재코드: {df['자재코드'].nunique():,}개"
-)
-```
+                    size=
