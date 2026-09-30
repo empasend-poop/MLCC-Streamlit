@@ -673,4 +673,650 @@ with tab1:
                     width=3,
                 ),
                 marker=dict(
-                    size=
+                    size=9,
+                ),
+                hovertemplate=(
+                    "시간: %{x:,.0f} hr"
+                    "<br>잔여용량: %{y:.5f} µF"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    if not long_term_df.empty:
+        fig_aging.add_trace(
+            go.Scatter(
+                x=long_term_df["시간(hr)"],
+                y=long_term_df["잔여용량(uF)"],
+                mode="markers",
+                name="Excel 장기 산출값",
+                marker=dict(
+                    size=12,
+                    symbol="diamond",
+                ),
+                hovertemplate=(
+                    "시간: %{x:,.0f} hr"
+                    "<br>잔여용량: %{y:.5f} µF"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig_aging.update_layout(
+        height=520,
+        xaxis_title="경과시간 (hr)",
+        yaxis_title="잔여용량 (µF)",
+        hovermode="closest",
+        legend_title="",
+    )
+
+    fig_aging.update_xaxes(
+        type="log",
+    )
+
+    st.plotly_chart(
+        fig_aging,
+        use_container_width=True,
+    )
+
+    st.caption(
+        "실선은 1,000시간 이하 Aging 데이터, "
+        "Diamond는 Excel의 1,000시간 초과 장기 산출값입니다."
+    )
+
+    chart_parts = []
+
+    if not measured_df.empty:
+        measured_table = measured_df.copy()
+        measured_table["구분"] = "실측"
+        chart_parts.append(
+            measured_table
+        )
+
+    if not long_term_df.empty:
+        long_table = long_term_df.copy()
+        long_table["구분"] = "장기 산출"
+        chart_parts.append(
+            long_table
+        )
+
+    if chart_parts:
+        chart_table = pd.concat(
+            chart_parts,
+            ignore_index=True,
+        ).sort_values(
+            "시간(hr)"
+        )
+
+        with st.expander(
+            "Aging 그래프 데이터 보기"
+        ):
+            st.dataframe(
+                chart_table,
+                hide_index=True,
+                use_container_width=True,
+            )
+
+
+# ============================================================
+# 19. TAB 2 - 잔여율
+# ============================================================
+
+with tab2:
+    st.subheader(
+        "초기 대비 Aging 잔여율"
+    )
+
+    remaining_rows = []
+
+    if (
+        pd.notna(initial_capacity)
+        and float(initial_capacity) != 0
+    ):
+        for _, row in measured_df.iterrows():
+            remaining_rate = (
+                row["잔여용량(uF)"]
+                / float(initial_capacity)
+                * 100
+            )
+
+            remaining_rows.append(
+                {
+                    "시간(hr)": row["시간(hr)"],
+                    "잔여율(%)": remaining_rate,
+                    "구분": "실측",
+                }
+            )
+
+        for _, row in long_term_df.iterrows():
+            remaining_rate = (
+                row["잔여용량(uF)"]
+                / float(initial_capacity)
+                * 100
+            )
+
+            remaining_rows.append(
+                {
+                    "시간(hr)": row["시간(hr)"],
+                    "잔여율(%)": remaining_rate,
+                    "구분": "장기 산출",
+                }
+            )
+
+    remaining_df = pd.DataFrame(
+        remaining_rows
+    )
+
+    if remaining_df.empty:
+        st.info(
+            "초기용량 데이터가 없어 잔여율을 계산할 수 없습니다."
+        )
+
+    else:
+        measured_remaining = remaining_df[
+            remaining_df["구분"] == "실측"
+        ].copy()
+
+        long_remaining = remaining_df[
+            remaining_df["구분"] == "장기 산출"
+        ].copy()
+
+        fig_remaining = go.Figure()
+
+        if not measured_remaining.empty:
+            fig_remaining.add_trace(
+                go.Scatter(
+                    x=measured_remaining["시간(hr)"],
+                    y=measured_remaining["잔여율(%)"],
+                    mode="lines+markers",
+                    name="Aging 실측",
+                    line=dict(
+                        width=3,
+                    ),
+                    marker=dict(
+                        size=9,
+                    ),
+                    hovertemplate=(
+                        "시간: %{x:,.0f} hr"
+                        "<br>잔여율: %{y:.4f}%"
+                        "<extra></extra>"
+                    ),
+                )
+            )
+
+        if not long_remaining.empty:
+            fig_remaining.add_trace(
+                go.Scatter(
+                    x=long_remaining["시간(hr)"],
+                    y=long_remaining["잔여율(%)"],
+                    mode="markers",
+                    name="장기 산출",
+                    marker=dict(
+                        size=12,
+                        symbol="diamond",
+                    ),
+                    hovertemplate=(
+                        "시간: %{x:,.0f} hr"
+                        "<br>잔여율: %{y:.4f}%"
+                        "<extra></extra>"
+                    ),
+                )
+            )
+
+        fig_remaining.update_layout(
+            height=500,
+            xaxis_title="경과시간 (hr)",
+            yaxis_title="초기 대비 잔여율 (%)",
+            hovermode="closest",
+            legend_title="",
+        )
+
+        fig_remaining.update_xaxes(
+            type="log",
+        )
+
+        st.plotly_chart(
+            fig_remaining,
+            use_container_width=True,
+        )
+
+        st.caption(
+            "잔여율 = 해당 시간의 잔여용량 ÷ 25℃/0V 초기용량 × 100"
+        )
+
+        remaining_table = remaining_df.copy()
+
+        remaining_table["잔여율(%)"] = (
+            remaining_table["잔여율(%)"]
+            .round(4)
+        )
+
+        st.dataframe(
+            remaining_table,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+# ============================================================
+# 20. TAB 3 - 장기 결과
+# ============================================================
+
+with tab3:
+    st.subheader(
+        "장기 Aging 산출결과"
+    )
+
+    excel_r2 = selected_row.get(
+        "결정계수 (R^2)",
+        np.nan,
+    )
+
+    st.metric(
+        "Excel 결정계수 R²",
+        (
+            f"{excel_r2:.4f}"
+            if pd.notna(excel_r2)
+            else "-"
+        ),
+    )
+
+    st.markdown("#### 7년")
+
+    seven_capacity = selected_row.get(
+        "7년 (-20%반영)",
+        np.nan,
+    )
+
+    seven_remaining = selected_row.get(
+        "7년 잔여율",
+        np.nan,
+    )
+
+    seven_decrease = selected_row.get(
+        "7년 감소율",
+        np.nan,
+    )
+
+    seven1, seven2, seven3 = st.columns(3)
+
+    seven1.metric(
+        "7년 잔여용량",
+        (
+            f"{seven_capacity:.5f} µF"
+            if pd.notna(seven_capacity)
+            else "-"
+        ),
+    )
+
+    seven2.metric(
+        "7년 잔여율",
+        format_percent(
+            seven_remaining
+        ),
+    )
+
+    seven3.metric(
+        "7년 감소율",
+        format_percent(
+            seven_decrease
+        ),
+    )
+
+    st.markdown("#### 10년")
+
+    ten_capacity = selected_row.get(
+        "10년 (-20%반영)",
+        np.nan,
+    )
+
+    ten_remaining = selected_row.get(
+        "10년 잔여율",
+        np.nan,
+    )
+
+    ten_decrease = selected_row.get(
+        "10년 감소율",
+        np.nan,
+    )
+
+    ten1, ten2, ten3 = st.columns(3)
+
+    ten1.metric(
+        "10년 잔여용량",
+        (
+            f"{ten_capacity:.5f} µF"
+            if pd.notna(ten_capacity)
+            else "-"
+        ),
+    )
+
+    ten2.metric(
+        "10년 잔여율",
+        format_percent(
+            ten_remaining
+        ),
+    )
+
+    ten3.metric(
+        "10년 감소율",
+        format_percent(
+            ten_decrease
+        ),
+    )
+
+    if not long_term_df.empty:
+        st.markdown(
+            "#### Excel 장기 시간별 산출값"
+        )
+
+        long_display = long_term_df.copy()
+
+        long_display["기간"] = long_display[
+            "시간(hr)"
+        ].map(
+            {
+                8760: "1년",
+                43800: "5년",
+                61320: "7년",
+                87600: "10년",
+            }
+        )
+
+        long_display["기간"] = (
+            long_display["기간"]
+            .fillna(
+                long_display["시간(hr)"]
+                .map(
+                    lambda value: f"{value:,.0f} hr"
+                )
+            )
+        )
+
+        if (
+            pd.notna(initial_capacity)
+            and float(initial_capacity) != 0
+        ):
+            long_display[
+                "초기 대비 잔여율(%)"
+            ] = (
+                long_display["잔여용량(uF)"]
+                / float(initial_capacity)
+                * 100
+            ).round(4)
+
+            long_display[
+                "초기 대비 감소율(%)"
+            ] = (
+                100
+                - long_display[
+                    "초기 대비 잔여율(%)"
+                ]
+            ).round(4)
+
+        display_order = [
+            "기간",
+            "시간(hr)",
+            "잔여용량(uF)",
+            "초기 대비 잔여율(%)",
+            "초기 대비 감소율(%)",
+        ]
+
+        display_order = [
+            column
+            for column in display_order
+            if column in long_display.columns
+        ]
+
+        st.dataframe(
+            long_display[
+                display_order
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+# ============================================================
+# 21. TAB 4 - 부품사 비교
+# ============================================================
+
+with tab4:
+    st.subheader(
+        "동일 자재코드 부품사 Aging 비교"
+    )
+
+    st.caption(
+        f"자재코드 {selected_material} 기준"
+    )
+
+    same_voltage_only = st.checkbox(
+        "동일 시험전압 조건만 비교",
+        value=True,
+        key="aging_same_voltage",
+    )
+
+    comparison_source = df[
+        df["자재코드"] == selected_material
+    ].copy()
+
+    if same_voltage_only:
+        comparison_source = comparison_source[
+            comparison_source["시험전압"]
+            == selected_voltage
+        ].copy()
+
+    comparison_source = get_latest_rows(
+        comparison_source,
+        subset=[
+            "부품사",
+            "자재코드",
+            "시험전압",
+        ],
+    )
+
+    comparison_rows = []
+
+    for _, row in comparison_source.iterrows():
+        supplier = row["부품사"]
+        voltage = row["시험전압"]
+
+        for column, hour in measured_hour_columns:
+            value = row.get(
+                column,
+                np.nan,
+            )
+
+            if pd.isna(value):
+                continue
+
+            comparison_rows.append(
+                {
+                    "부품사": supplier,
+                    "시험전압": voltage,
+                    "시간(hr)": hour,
+                    "잔여용량(uF)": float(value),
+                    "구분": (
+                        f"{supplier} / "
+                        f"{voltage:g}V"
+                    ),
+                }
+            )
+
+    comparison_df = pd.DataFrame(
+        comparison_rows
+    )
+
+    if comparison_df.empty:
+        st.info(
+            "현재 조건에서 비교 가능한 Aging 데이터가 없습니다."
+        )
+
+    else:
+        fig_compare = px.line(
+            comparison_df,
+            x="시간(hr)",
+            y="잔여용량(uF)",
+            color="구분",
+            markers=True,
+        )
+
+        fig_compare.update_traces(
+            line=dict(
+                width=3,
+            ),
+            marker=dict(
+                size=8,
+            ),
+        )
+
+        fig_compare.update_xaxes(
+            type="log",
+        )
+
+        fig_compare.update_layout(
+            height=520,
+            xaxis_title="경과시간 (hr)",
+            yaxis_title="잔여용량 (µF)",
+            legend_title="",
+            hovermode="closest",
+        )
+
+        st.plotly_chart(
+            fig_compare,
+            use_container_width=True,
+        )
+
+    # --------------------------------------------------------
+    # 7년 / 10년 비교
+    # --------------------------------------------------------
+
+    st.markdown(
+        "#### 부품사별 7년 / 10년 잔여율 비교"
+    )
+
+    supplier_long_rows = []
+
+    for _, row in comparison_source.iterrows():
+        supplier = row["부품사"]
+        voltage = row["시험전압"]
+
+        seven_rate = percent_to_number(
+            row.get(
+                "7년 잔여율",
+                np.nan,
+            )
+        )
+
+        ten_rate = percent_to_number(
+            row.get(
+                "10년 잔여율",
+                np.nan,
+            )
+        )
+
+        label = (
+            f"{supplier} / "
+            f"{voltage:g}V"
+        )
+
+        if pd.notna(seven_rate):
+            supplier_long_rows.append(
+                {
+                    "부품사 / 시험전압": label,
+                    "기간": "7년",
+                    "잔여율(%)": seven_rate,
+                }
+            )
+
+        if pd.notna(ten_rate):
+            supplier_long_rows.append(
+                {
+                    "부품사 / 시험전압": label,
+                    "기간": "10년",
+                    "잔여율(%)": ten_rate,
+                }
+            )
+
+    supplier_long_df = pd.DataFrame(
+        supplier_long_rows
+    )
+
+    if not supplier_long_df.empty:
+        fig_long = px.bar(
+            supplier_long_df,
+            x="부품사 / 시험전압",
+            y="잔여율(%)",
+            color="기간",
+            barmode="group",
+            text_auto=".2f",
+        )
+
+        fig_long.update_layout(
+            height=480,
+            xaxis_title="",
+            yaxis_title="잔여율 (%)",
+            legend_title="",
+        )
+
+        st.plotly_chart(
+            fig_long,
+            use_container_width=True,
+        )
+
+    with st.expander(
+        "부품사 비교 원본 데이터"
+    ):
+        st.dataframe(
+            comparison_source,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+# ============================================================
+# 22. 원본 데이터
+# ============================================================
+
+st.divider()
+
+with st.expander(
+    "현재 선택 데이터 전체 보기"
+):
+    st.dataframe(
+        selected_df,
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
+with st.expander(
+    "전체 Aging 데이터 보기"
+):
+    st.dataframe(
+        df,
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# 23. Footer
+# ============================================================
+
+st.divider()
+
+footer1, footer2, footer3 = st.columns(3)
+
+footer1.caption(
+    f"Aging 데이터: {len(df):,}건"
+)
+
+footer2.caption(
+    f"부품사: {df['부품사'].nunique():,}개"
+)
+
+footer3.caption(
+    f"자재코드: {df['자재코드'].nunique():,}개"
+)
+```
